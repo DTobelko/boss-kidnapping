@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Boss Kidnapping: Remastered</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', monospace; user-select: none; }
+        #gameContainer { position: relative; width: 100vw; height: 100vh; }
+        canvas { display: block; }
+        
+        #uiLayer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        #loadingScreen, #startScreen, #transitionScreen, #gameOverScreen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            pointer-events: auto; z-index: 20;
+        }
+        
+        h1 { color: #fff; font-size: 4vw; text-transform: uppercase; text-shadow: 0 0 10px #f00; margin-bottom: 10px; text-align: center; }
+        h2 { color: #ffcc00; font-size: 2vw; margin-bottom: 30px; text-align: center; letter-spacing: 2px;}
+        p { color: #aaa; font-size: 1.2vw; max-width: 600px; text-align: center; margin-bottom: 40px; }
+        
+        button {
+            padding: 15px 50px; font-size: 20px; background-color: #b00; color: white;
+            border: 2px solid #f55; cursor: pointer; font-family: inherit; font-weight: bold;
+            text-transform: uppercase; transition: all 0.2s;
+        }
+        button:hover { background-color: #f00; transform: scale(1.05); }
+        button:disabled { background-color: #555; border-color: #777; transform: none; cursor: not-allowed; }
+
+        /* HUD */
+        #hud { display: none; padding: 20px; position: absolute; top: 0; left: 0; z-index: 5; }
+        .bar-wrap { margin-bottom: 8px; display: flex; align-items: center; }
+        .bar-label { color: #fff; font-size: 14px; font-weight: bold; width: 80px; text-shadow: 1px 1px 0 #000; }
+        .health-track { width: 150px; height: 10px; background: #333; border: 1px solid #666; position: relative; }
+        .health-fill { height: 100%; background: #0f0; transition: width 0.2s; }
+        
+        #missionObj { 
+            position: absolute; top: 20px; right: 20px; 
+            color: #fff; text-align: right; font-weight: bold; font-size: 18px; 
+            text-shadow: 2px 2px 0 #000; background: rgba(0,0,0,0.5); padding: 10px; border: 1px solid #444;
+            z-index: 5;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="uiLayer">
+        <div id="hud"></div>
+        <div id="missionObj"></div>
+
+        <!-- Экран загрузки ресурсов -->
+        <div id="loadingScreen">
+            <h1>LOADING ASSETS...</h1>
+            <h2 id="loadProgress">0%</h2>
+        </div>
+
+        <div id="startScreen" style="display:none;">
+            <h1>Boss Kidnapping</h1>
+            <h2>Tactical Ops</h2>
+            <p>Mission: Infiltrate via Sea, Jungle, and Palace.<br>Capture the Boss alive.</p>
+            <button id="playBtn">START GAME</button>
+        </div>
+        
+        <div id="transitionScreen" style="display:none;">
+            <h1 id="transTitle">AREA SECURED</h1>
+            <button id="nextBtn">NEXT STAGE</button>
+        </div>
+
+        <div id="gameOverScreen" style="display:none;">
+            <h1 style="color:#f33">MISSION FAILED</h1>
+            <h2 id="failReason"></h2>
+            <button onclick="location.reload()">RETRY</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- ASSET MANAGER ---
+    const IMAGES = {
+        water: 'img/water.png',
+        sand: 'img/sand.png',
+        grass: 'img/grass.png',
+        floor: 'img/floor.png',
+        wall: 'img/wall.png',
+        playerBoat: 'img/boat_player.png',
+        enemyBoat: 'img/boat_enemy.png',
+        commando: 'img/commando.png',
+        enemy: 'img/enemy.png',
+        boss: 'img/boss.png',
+        tree: 'img/tree.png',
+        palace: 'img/palace.png'
+    };
+
+    const SOUNDS = {
+        music1: 'sfx/music_r1.mp3',
+        music2: 'sfx/music_r2.mp3',
+        music3: 'sfx/music_r3.mp3',
+        shoot: 'sfx/shoot.mp3',
+        hit: 'sfx/hit.mp3',
+        die: 'sfx/die.mp3'
+    };
+
+    const Assets = {
+        img: {},
+        sfx: {},
+        patterns: {}, // Для текстур (вода, трава)
+        loaded: 0,
+        total: Object.keys(IMAGES).length + Object.keys(SOUNDS).length,
+        
+        loadAll(onComplete) {
+            // Load Images
+            for (let key in IMAGES) {
+                const img = new Image();
+                img.src = IMAGES[key];
+                img.onload = () => {
+                    this.img[key] = img;
+                    this.checkLoad(onComplete);
+                };
+                img.onerror = () => {
+                    console.error("Failed to load: " + IMAGES[key]);
+                    // Создаем "заглушку" цветом, чтобы игра не упала
+                    this.img[key] = this.createPlaceholder(key); 
+                    this.checkLoad(onComplete);
+                };
+            }
+            // Load Sounds
+            for (let key in SOUNDS) {
+                const aud = new Audio();
+                aud.src = SOUNDS[key];
+                aud.preload = 'auto'; // Загружаем сразу
+                
+                // Обработка загрузки аудио иногда хитрая в браузерах, 
+                // поэтому считаем загруженным, когда может играть
+                aud.oncanplaythrough = () => {
+                    this.sfx[key] = aud;
+                    this.checkLoad(onComplete);
+                    aud.oncanplaythrough = null; // убираем слушатель
+                };
+                aud.onerror = () => {
+                    console.warn("Sound missing: " + SOUNDS[key]);
+                    this.sfx[key] = null; // Игнорируем отсутствие звука
+                    this.checkLoad(onComplete);
+                };
+                // Fallback timeout если аудио грузится слишком долго
+                setTimeout(() => {
+                   if (!this.sfx[key] && this.sfx[key] !== null) {
+                       this.sfx[key] = null; 
+                       this.checkLoad(onComplete);
+                   }
+                }, 2000);
+            }
+        },
+
+        checkLoad(cb) {
+            this.loaded++;
+            let pct = Math.floor((this.loaded / this.total) * 100);
+            document.getElementById('loadProgress').innerText = pct + "%";
+            if (this.loaded >= this.total) {
+                this.createPatterns();
+                setTimeout(cb, 500);
+            }
+        },
+
+        createPatterns() {
+            // Создаем паттерны для повторяющихся текстур
+            const ctx = document.getElementById('gameCanvas').getContext('2d');
+            if(this.img.water) this.patterns.water = ctx.createPattern(this.img.water, 'repeat');
+            if(this.img.sand) this.patterns.sand = ctx.createPattern(this.img.sand, 'repeat');
+            if(this.img.grass) this.patterns.grass = ctx.createPattern(this.img.grass, 'repeat');
+            if(this.img.floor) this.patterns.floor = ctx.createPattern(this.img.floor, 'repeat');
+            if(this.img.wall) this.patterns.wall = ctx.createPattern(this.img.wall, 'repeat');
+        },
+
+        createPlaceholder(name) {
+            // Если картинки нет, создаем цветной квадрат
+            const c = document.createElement('canvas');
+            c.width = 32; c.height = 32;
+            const cx = c.getContext('2d');
+            cx.fillStyle = 'magenta'; cx.fillRect(0,0,32,32);
+            cx.fillStyle = 'white'; cx.font="10px sans-serif"; cx.fillText(name, 0, 10);
+            return c;
+        },
+
+        playSound(name) {
+            if (this.sfx[name]) {
+                // Клонируем ноду, чтобы можно было накладывать звуки друг на друга
+                const clone = this.sfx[name].cloneNode();
+                clone.volume = 0.3;
+                clone.play().catch(e => console.log("Audio autoplay block"));
+            }
+        },
+        
+        playMusic(name) {
+            this.stopMusic();
+            if (this.sfx[name]) {
+                this.currentMusic = this.sfx[name];
+                this.currentMusic.loop = true;
+                this.currentMusic.volume = 0.2;
+                this.currentMusic.play().catch(e => console.log("Music autoplay block"));
+            }
+        },
+        
+        stopMusic() {
+            if (this.currentMusic) {
+                this.currentMusic.pause();
+                this.currentMusic.currentTime = 0;
+                this.currentMusic = null;
+            }
+        }
+    };
+
+    // --- GAME ENGINE ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Resize handling
+    function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+    window.addEventListener('resize', resize);
+    resize();
+
+    const R2_PALACE_X = 4200;
+
+    let gameState = 'LOADING', round = 1, cam = {x:0, y:0};
+    let keys = {}, mouse = {x:0, y:0, down:false};
+    let playerBoat, squad=[], enemies=[], bullets=[], particles=[], walls=[], trees=[], boss=null;
+
+    // Загрузка
+    Assets.loadAll(() => {
+        document.getElementById('loadingScreen').style.display = 'none';
+        document.getElementById('startScreen').style.display = 'flex';
+        gameState = 'MENU';
+    });
+
+    // --- CLASSES ---
+
+    class Wall {
+        constructor(x, y, w, h) { this.x=x; this.y=y; this.w=w; this.h=h; }
+        draw() {
+            const sx = this.x - cam.x, sy = this.y - cam.y;
+            if (Assets.patterns.wall) {
+                ctx.fillStyle = Assets.patterns.wall;
+                // Сдвигаем паттерн, чтобы он не "плыл" при движении камеры
+                ctx.save();
+                ctx.translate(-cam.x, -cam.y);
+                ctx.fillRect(this.x, this.y, this.w, this.h);
+                ctx.restore();
+            } else {
+                ctx.fillStyle = '#444'; ctx.fillRect(sx, sy, this.w, this.h);
+            }
+            ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.strokeRect(sx, sy, this.w, this.h);
+        }
+    }
+
+    class Tree {
+        constructor(x, y) { this.x=x; this.y=y; this.r=35; } 
+        draw() {
+            const sx = this.x - cam.x, sy = this.y - cam.y;
+            if (sx+100 < 0 || sx-100 > canvas.width) return;
+            // Рисуем картинку дерева по центру
+            const size = 120; // Размер спрайта
+            ctx.drawImage(Assets.img.tree, sx - size/2, sy - size/2, size, size);
+        }
+    }
+
+    class Bullet {
+        constructor(x, y, vx, vy, owner) {
+            this.x=x; this.y=y; this.vx=vx; this.vy=vy; this.owner=owner; this.dead=false;
+        }
+        update() {
+            this.x += this.vx; this.y += this.vy;
+            
+            // Wall Collision
+            if (round === 3 && checkWallHit(this.x, this.y)) {
+                this.dead = true; spawnParticles(this.x, this.y, '#ccc', 2); return;
+            }
+            // Tree Collision
+            if (round === 2 && checkTreeHit(this.x, this.y)) {
+                this.dead = true; spawnParticles(this.x, this.y, '#0f0', 3); return; 
+            }
+            // Bounds
+            if (this.x-cam.x < -100 || this.x-cam.x > canvas.width+100) this.dead=true;
+
+            // Damage
+            if (this.owner === 'player') {
+                for (let e of enemies) {
+                    if (dist(this, e) < e.w/2 + 5) {
+                        e.hit(10); this.dead=true; spawnParticles(this.x, this.y, '#f00', 4); break;
+                    }
+                }
+            } else {
+                if (round === 1 && playerBoat) {
+                    if (boxHit(this, playerBoat)) { playerBoat.hit(5); this.dead=true; }
+                } else {
+                    for (let s of squad) {
+                        if (s.active && dist(this, s) < 15) {
+                            s.hit(10); this.dead=true; spawnParticles(this.x, this.y, '#f00', 3); break;
+                        }
+                    }
+                }
+            }
+        }
+        draw() {
+            ctx.fillStyle = this.owner==='player' ? '#ff0' : '#f50';
+            ctx.beginPath(); ctx.arc(this.x-cam.x, this.y-cam.y, 3, 0, Math.PI*2); ctx.fill();
+        }
+    }
+
+    class Commando {
+        constructor(id, x, y) {
+            this.id=id; this.x=x; this.y=y; this.hp=100; this.active=true; this.speed=4; this.ls=0;
+            this.angle = 0;
+        }
+        update(isLeader, leader) {
+            if (!this.active) return;
+            let dx=0, dy=0;
+            
+            // Movement Logic
+            if (isLeader) {
+                if (keys['KeyW']) dy -= this.speed; if (keys['KeyS']) dy += this.speed;
+                if (keys['KeyA']) dx -= this.speed; if (keys['KeyD']) dx += this.speed;
+                // Look at mouse
+                this.angle = Math.atan2(mouse.y + cam.y - this.y, mouse.x + cam.x - this.x);
+                if (mouse.down && Date.now() - this.ls > 150) this.shoot(mouse.x+cam.x, mouse.y+cam.y);
+            } else if (leader) {
+                // Follow
+                let tx = leader.x - (this.id%2===0?30:60), ty = leader.y + (this.id>1?30:-30);
+                if (Math.hypot(tx-this.x, ty-this.y) > 40) {
+                    let a = Math.atan2(ty-this.y, tx-this.x);
+                    dx = Math.cos(a)*this.speed*0.9; dy = Math.sin(a)*this.speed*0.9;
+                    this.angle = a; // Look where walking
+                }
+                // AI Shoot
+                if (Date.now() - this.ls > 600) {
+                    let target = null, minD = 500;
+                    for (let e of enemies) {
+                        if (e.type === 'boss') continue; 
+                        let d = Math.hypot(e.x-this.x, e.y-this.y);
+                        if (d < minD && e.x > this.x - 50 && hasLineOfSight(this.x, this.y, e.x, e.y)) {
+                             minD = d; target = e;
+                        }
+                    }
+                    if (target) {
+                        this.shoot(target.x, target.y);
+                        this.angle = Math.atan2(target.y - this.y, target.x - this.x);
+                    }
+                }
+            }
+
+            // Move & Collide
+            if (dx||dy) {
+                let nx=this.x+dx, ny=this.y+dy;
+                if (round===2) { if(!checkTreeHit(nx, this.y)) this.x=nx; if(!checkTreeHit(this.x, ny)) this.y=ny; }
+                else if (round===3) { if(!checkWallHit(nx, this.y)) this.x=nx; if(!checkWallHit(this.x, ny)) this.y=ny; }
+                else { this.x+=dx; this.y+=dy; }
+            }
+
+            // Bounds & Win
+            if (round===2) {
+                this.x = Math.max(0, Math.min(this.x, 5000)); this.y = Math.max(100, Math.min(this.y, canvas.height-50));
+                if (this.x > R2_PALACE_X + 200 && enemies.length===0) winRound();
+            }
+            if (round===3 && boss && boss.hp>0 && Math.hypot(this.x-boss.x, this.y-boss.y)<50) winGame();
+        }
+        shoot(tx, ty) {
+            let a = Math.atan2(ty-this.y, tx-this.x) + (Math.random()-0.5)*0.1;
+            bullets.push(new Bullet(this.x, this.y, Math.cos(a)*12, Math.sin(a)*12, 'player'));
+            this.ls = Date.now(); Assets.playSound('shoot');
+        }
+        hit(d) {
+            this.hp-=d; Assets.playSound('hit'); updateHUD();
+            if (this.hp<=0) { this.active=false; this.hp=0; spawnParticles(this.x,this.y,'#900',15); Assets.playSound('die'); }
+            if (squad.every(s=>!s.active)) fail("SQUAD ELIMINATED");
+        }
+        draw(isLeader) {
+            if (!this.active) return;
+            const sx = this.x-cam.x, sy = this.y-cam.y;
+            
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(this.angle); // Поворот спрайта
+            
+            // Рисуем спрайт (смещаем на половину ширины/высоты для центровки)
+            const size = 50; 
+            ctx.drawImage(Assets.img.commando, -size/2, -size/2, size, size);
+            
+            ctx.restore();
+
+            if (isLeader) { ctx.strokeStyle='#fb0'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(sx,sy,25,0,7); ctx.stroke(); }
+        }
+    }
+
+    class Enemy {
+        constructor(x, y, type) {
+            this.x=x; this.y=y; this.type=type; this.hp=25; this.w=30; this.ls=Math.random()*1000;
+            this.angle = Math.PI; // Face left by default
+            if (type==='boat') { this.w=80; this.hp=40; }
+            if (type==='boss') { this.w=40; this.hp=100; }
+        }
+        update() {
+            if (this.x-cam.x > -100 && this.x-cam.x < canvas.width+100) {
+                // Look at target
+                let t = round===1 ? playerBoat : squad.find(s=>s.active);
+                if (t) {
+                    let tx = round===1?t.x+50:t.x;
+                    let ty = round===1?t.y+20:t.y;
+                    this.angle = Math.atan2(ty - this.y, tx - this.x);
+                }
+
+                let delay = this.type==='boss'?999999:1200;
+                if (Date.now() - this.ls > delay) {
+                    if (t && hasLineOfSight(this.x, this.y, t.x, round===1?t.y+20:t.y)) {
+                        bullets.push(new Bullet(this.x, this.y, Math.cos(this.angle)*6, Math.sin(this.angle)*6, 'enemy'));
+                        this.ls = Date.now()+Math.random()*500; 
+                        Assets.playSound('shoot');
+                    }
+                }
+            }
+        }
+        hit(d) {
+            this.hp-=d; if(this.hp<=0) {
+                spawnParticles(this.x,this.y,'#fa0',10); Assets.playSound('die');
+                if(this.type==='boss') fail("BOSS KILLED! MISSION FAILED");
+            }
+        }
+        draw() {
+            const sx = this.x-cam.x, sy = this.y-cam.y;
+            ctx.save();
+            ctx.translate(sx, sy);
+            
+            if (this.type === 'boat') {
+                 // Лодка не вращается за игроком, просто плывет
+                 ctx.drawImage(Assets.img.enemyBoat, -50, -25, 100, 50);
+            } else if (this.type === 'boss') {
+                ctx.rotate(this.angle);
+                ctx.drawImage(Assets.img.boss, -30, -30, 60, 60);
+                // Label
+                ctx.rotate(-this.angle); // Reset label rot
+                ctx.fillStyle='#fff'; ctx.font="bold 12px Arial"; ctx.fillText("BOSS", -15, -35);
+            } else {
+                ctx.rotate(this.angle);
+                ctx.drawImage(Assets.img.enemy, -25, -25, 50, 50);
+            }
+            ctx.restore();
+        }
+    }
+
+    // --- PHYSICS HELPERS ---
+    function dist(a,b){return Math.hypot(a.x-b.x, a.y-b.y);}
+    function boxHit(c,r){return c.x>r.x && c.x<r.x+100 && c.y>r.y && c.y<r.y+40;}
+    function checkWallHit(x,y){
+        for(let w of walls) if(x>w.x && x<w.x+w.w && y>w.y && y<w.y+w.h) return true;
+        return false;
+    }
+    function checkTreeHit(x,y){
+        for(let t of trees) if(Math.hypot(x-t.x, y-t.y) < t.r) return true;
+        return false;
+    }
+    function checkTreeSafe(x,y,margin){
+        for(let t of trees) if(Math.hypot(x-t.x, y-t.y) < t.r + margin) return false;
+        return true;
+    }
+    function hasLineOfSight(x1, y1, x2, y2) {
+        let d = Math.hypot(x2-x1, y2-y1), steps = d/20, dx=(x2-x1)/steps, dy=(y2-y1)/steps;
+        let cx=x1, cy=y1;
+        for(let i=0; i<steps; i++) {
+            cx+=dx; cy+=dy;
+            if (round===3 && checkWallHit(cx, cy)) return false;
+            if (round===2 && checkTreeHit(cx, cy)) return false; 
+        }
+        return true;
+    }
+
+    // --- GAME FLOW ---
+    function initR1() {
+        round=1; cam={x:0,y:0}; bullets=[]; enemies=[]; particles=[];
+        playerBoat={x:100,y:300,hp:100,ls:0,hit(d){this.hp-=d;updateHUD();if(this.hp<=0)fail("BOAT SANK");}};
+        for(let i=0;i<12;i++) enemies.push(new Enemy(800+i*250, 50+Math.random()*500, 'boat'));
+        for(let i=0;i<8;i++) enemies.push(new Enemy(3600+Math.random()*300, 100+Math.random()*500, 'soldier'));
+        setHUD(1); Assets.playMusic('music1');
+    }
+
+    function initR2() {
+        round=2; cam={x:0,y:0}; bullets=[]; enemies=[]; particles=[]; trees=[];
+        squad=[0,1,2,3].map(i=>new Commando(i,100,200+i*50));
+        
+        for(let i=0;i<100;i++) {
+            let tx = 400 + Math.random()*(R2_PALACE_X - 600); 
+            let ty = 100 + Math.random()*(canvas.height-200);
+            trees.push(new Tree(tx, ty));
+        }
+        
+        let attempts = 0;
+        while(enemies.length < 25 && attempts < 1000) {
+            attempts++;
+            let ex = 600 + Math.random()*(R2_PALACE_X - 800);
+            let ey = 150 + Math.random()*400;
+            if(checkTreeSafe(ex, ey, 50)) enemies.push(new Enemy(ex, ey, 'soldier'));
+        }
+
+        for(let i=0;i<15;i++) enemies.push(new Enemy(R2_PALACE_X + Math.random()*200, 200+Math.random()*300, 'guard'));
+        
+        setHUD(2); document.getElementById('missionObj').innerText = "ROUND 2: CLEAR JUNGLE";
+        Assets.playMusic('music2');
+    }
+
+    function initR3() {
+        round=3; cam={x:0,y:0}; bullets=[]; enemies=[]; particles=[];
+        let surv = squad.filter(s=>s.active).length || 1;
+        squad = []; for(let i=0;i<surv;i++) squad.push(new Commando(i,100,700+i*40));
+        
+        const W=2000,H=1500;
+        walls = [
+            new Wall(0,0,W,100), new Wall(0,H-100,W,100), new Wall(0,0,50,H), new Wall(W-50,0,50,H),
+            new Wall(500,100,50,500), new Wall(500,900,50,500), new Wall(1000,400,100,700), 
+            new Wall(1500,100,50,400), new Wall(1500,1000,50,400)
+        ];
+        
+        [400,900,1400].forEach(x => { for(let i=0;i<4;i++) enemies.push(new Enemy(x, 300+i*200, 'guard')); });
+        enemies.push(new Enemy(1700,500,'guard'), new Enemy(1700,1000,'guard'));
+        boss = new Enemy(1800,750,'boss'); enemies.push(boss);
+
+        setHUD(3); document.getElementById('missionObj').innerText = "ROUND 3: CAPTURE BOSS";
+        Assets.playMusic('music3');
+    }
+
+    function loop() {
+        if (gameState!=='PLAYING') return;
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+
+        // BG DRAW
+        if (round===1) {
+            // Water Pattern
+            ctx.fillStyle = Assets.patterns.water || '#006994';
+            ctx.save(); ctx.translate(-cam.x, -cam.y); ctx.fillRect(cam.x, cam.y, canvas.width, canvas.height); ctx.restore();
+            
+            // Sand
+            if(3500-cam.x < canvas.width) { 
+                ctx.fillStyle= Assets.patterns.sand || '#d2b48c'; 
+                ctx.save(); ctx.translate(-cam.x, 0); ctx.fillRect(3500, 0, 2000, canvas.height); ctx.restore();
+            }
+            
+            // Player Logic
+            if(keys['KeyW'])playerBoat.y-=5; if(keys['KeyS'])playerBoat.y+=5;
+            if(keys['KeyA'])playerBoat.x-=5; if(keys['KeyD'])playerBoat.x+=5;
+            playerBoat.x = Math.max(cam.x, Math.min(playerBoat.x, 4000));
+            
+            if(mouse.down && Date.now()-playerBoat.ls>200) {
+                 let a=Math.atan2(mouse.y-(playerBoat.y+20-cam.y), mouse.x-(playerBoat.x+80-cam.x));
+                 bullets.push(new Bullet(playerBoat.x+80,playerBoat.y+20,Math.cos(a)*15,Math.sin(a)*15,'player'));
+                 playerBoat.ls=Date.now(); Assets.playSound('shoot');
+            }
+            
+            cam.x = playerBoat.x-200;
+            
+            // Draw Player Boat
+            let bx=playerBoat.x-cam.x; 
+            ctx.drawImage(Assets.img.playerBoat, bx, playerBoat.y, 100, 50);
+
+            if(playerBoat.x>3800) winRound(); 
+        } 
+        else if (round===2) {
+            // Jungle Grass
+            ctx.fillStyle = Assets.patterns.grass || '#1a3300';
+            ctx.save(); ctx.translate(-cam.x, -cam.y); ctx.fillRect(cam.x, cam.y, canvas.width, canvas.height); ctx.restore();
+
+            let px=R2_PALACE_X-cam.x; 
+            if(px<canvas.width) { 
+                ctx.drawImage(Assets.img.palace, px, 50, 400, 400);
+            }
+        } 
+        else {
+            // Palace Floor
+            ctx.fillStyle = Assets.patterns.floor || '#322';
+            ctx.save(); ctx.translate(-cam.x, -cam.y); ctx.fillRect(cam.x, cam.y, canvas.width, canvas.height); ctx.restore();
+            
+            // Carpet
+            ctx.fillStyle='#900'; ctx.fillRect(0-cam.x, 700-cam.y, 2000, 100);
+        }
+
+        if(round===3) walls.forEach(w=>w.draw());
+        if(round===2) trees.forEach(t=>t.draw());
+
+        if(round>1) {
+            let l=squad.find(s=>s.active);
+            if(l) {
+                cam.x += ((l.x-canvas.width*0.4)-cam.x)*0.1;
+                if(round===3) cam.y += ((l.y-canvas.height*0.5)-cam.y)*0.1;
+                cam.x=Math.max(0,cam.x); 
+                if(round===2) cam.x=Math.min(cam.x, R2_PALACE_X + 400 - canvas.width);
+            }
+            squad.forEach(s=>s.update(s===l,l)); squad.forEach(s=>s.draw(s===l));
+        }
+
+        enemies=enemies.filter(e=>e.hp>0); enemies.forEach(e=>{e.update();e.draw()});
+        bullets.forEach(b=>b.update()); bullets=bullets.filter(b=>!b.dead); bullets.forEach(b=>b.draw());
+        
+        particles.forEach(p=>{
+            p.x+=p.vx;p.y+=p.vy;p.life-=0.1;
+            ctx.fillStyle=p.c; ctx.globalAlpha=Math.max(0,p.life);
+            ctx.fillRect(p.x-cam.x,p.y-cam.y,4,4);
+            ctx.globalAlpha=1;
+        });
+        particles=particles.filter(p=>p.life>0);
+
+        requestAnimationFrame(loop);
+    }
+
+    function winRound(){if(round<3){gameState='TRANSITION';document.getElementById('transitionScreen').style.display='flex';}}
+    function winGame(){gameState='WIN';alert("MISSION SUCCESS!\nBoss Captured.");location.reload();}
+    function fail(r){gameState='GAMEOVER';document.getElementById('failReason').innerText=r;document.getElementById('gameOverScreen').style.display='flex';}
+    function spawnParticles(x,y,c,n){for(let i=0;i<n;i++)particles.push({x,y,c,vx:(Math.random()-.5)*5,vy:(Math.random()-.5)*5,life:1});}
+    function setHUD(r){
+        let h=document.getElementById('hud'); h.style.display='block';
+        if(r===1) h.innerHTML='<div class="bar-wrap"><div class="bar-label">BOAT</div><div class="health-track"><div id="hp_boat" class="health-fill"></div></div></div>';
+        else h.innerHTML=['ALPHA','BRAVO','CHARLIE','DELTA'].map((n,i)=>`<div class="bar-wrap"><div class="bar-label">${n}</div><div class="health-track"><div id="hp_${i}" class="health-fill"></div></div></div>`).join('');
+    }
+    function updateHUD(){
+        if(round===1) document.getElementById('hp_boat').style.width=Math.max(0,playerBoat.hp)+'%';
+        else squad.forEach((s,i)=>{let el=document.getElementById('hp_'+i); if(el){el.style.width=Math.max(0,s.hp)+'%';el.style.background=s.active?'#0f0':'#500';}});
+    }
+
+    window.onkeydown=e=>keys[e.code]=true; window.onkeyup=e=>keys[e.code]=false;
+    window.onmousedown=()=>mouse.down=true; window.onmouseup=()=>mouse.down=false;
+    window.onmousemove=e=>{mouse.x=e.clientX;mouse.y=e.clientY;};
+    document.getElementById('playBtn').onclick=()=>{document.getElementById('startScreen').style.display='none';initR1();gameState='PLAYING';loop();};
+    document.getElementById('nextBtn').onclick=()=>{document.getElementById('transitionScreen').style.display='none';if(round===1)initR2();else initR3();gameState='PLAYING';loop();};
+
+</script>
+</body>
+</html>
