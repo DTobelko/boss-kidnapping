@@ -6,7 +6,7 @@
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', monospace; user-select: none; }
         #gameContainer { position: relative; width: 100vw; height: 100vh; }
-        canvas { display: block; }
+        canvas { display: block; cursor: crosshair;}
         
         #uiLayer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
         
@@ -52,6 +52,7 @@
     <div id="uiLayer">
         <div id="hud"></div>
         <div id="missionObj"></div>
+	<div id="cheatInfo">WASD for move, LMB to shoot</div>
 
         <!-- Экран загрузки ресурсов -->
         <div id="loadingScreen">
@@ -93,7 +94,8 @@
         enemy: 'img/enemy.png',
         boss: 'img/boss.png',
         tree: 'img/tree.png',
-        palace: 'img/palace.png'
+        palace: 'img/palace.png',
+	victory: 'img/victory.png'
     };
 
     const SOUNDS = {
@@ -102,7 +104,8 @@
         music3: 'sfx/music_r3.mp3',
         shoot: 'sfx/shoot.mp3',
         hit: 'sfx/hit.mp3',
-        die: 'sfx/die.mp3'
+        die: 'sfx/die.mp3',
+	victory: 'sfx/victory.mp3'
     };
 
     const Assets = {
@@ -228,6 +231,9 @@
     let gameState = 'LOADING', round = 1, cam = {x:0, y:0};
     let keys = {}, mouse = {x:0, y:0, down:false};
     let playerBoat, squad=[], enemies=[], bullets=[], particles=[], walls=[], trees=[], boss=null;
+
+    let victoryAlpha = 0;
+    let victoryScale = 0.5; // Начальный масштаб (50%)
 
     // Загрузка
     Assets.loadAll(() => {
@@ -479,7 +485,7 @@
     function initR1() {
         round=1; cam={x:0,y:0}; bullets=[]; enemies=[]; particles=[];
         playerBoat={x:100,y:300,hp:100,ls:0,hit(d){this.hp-=d;updateHUD();if(this.hp<=0)fail("BOAT SANK");}};
-        for(let i=0;i<12;i++) enemies.push(new Enemy(800+i*250, 50+Math.random()*500, 'boat'));
+        for(let i=0;i<12;i++) enemies.push(new Enemy(800+i*200, 50+Math.random()*500, 'boat'));
         for(let i=0;i<8;i++) enemies.push(new Enemy(3600+Math.random()*300, 100+Math.random()*500, 'soldier'));
         setHUD(1); Assets.playMusic('music1');
     }
@@ -526,9 +532,13 @@
 
         setHUD(3); document.getElementById('missionObj').innerText = "ROUND 3: CAPTURE BOSS";
         Assets.playMusic('music3');
+	
+	updateHUD();
     }
 
     function loop() {
+
+	if(gameState==='VICTORY_STATIC') { drawVictory(); return; }
         if (gameState!=='PLAYING') return;
         ctx.clearRect(0,0,canvas.width,canvas.height);
 
@@ -611,7 +621,67 @@
     }
 
     function winRound(){if(round<3){gameState='TRANSITION';document.getElementById('transitionScreen').style.display='flex';}}
-    function winGame(){gameState='WIN';alert("MISSION SUCCESS!\nBoss Captured.");location.reload();}
+
+
+//    function winGame(){gameState='WIN';alert("MISSION SUCCESS!\nBoss Captured.");location.reload();}
+    function winGame(){
+        console.log("VICTORY!");
+        // Используем новое состояние, чтобы не путаться со старой анимацией
+        gameState = 'VICTORY_STATIC'; 
+        Assets.stopMusic();
+        Assets.playSound('victory');
+    }
+
+    function drawVictory() {
+        // 1. СБРОС КАМЕРЫ И ПРОЗРАЧНОСТИ (ОБЯЗАТЕЛЬНО)
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+
+        // (Мы НЕ очищаем экран и НЕ рисуем черный фон, 
+        // поэтому картинка будет висеть поверх застывшей игры)
+
+        // 2. Рисуем картинку
+        if (Assets.img.victory) {
+            const img = Assets.img.victory;
+            
+            // Расчет размеров: пусть картинка занимает 60% высоты экрана
+            // Если картинка маленькая (214px), она увеличится и станет заметной.
+            const targetHeight = canvas.height * 0.6; 
+            const scale = targetHeight / img.height;
+            
+            const w = img.width * scale;
+            const h = img.height * scale;
+            
+            // Центрирование
+            const x = (canvas.width - w) / 2;
+            const y = (canvas.height - h) / 2;
+
+            // Рисуем
+            ctx.drawImage(img, x, y, w, h);
+            
+            // Рисуем рамку вокруг картинки (для красоты)
+           // ctx.strokeStyle = '#fff';
+           // ctx.lineWidth = 5;
+          //  ctx.strokeRect(x, y, w, h);
+        }
+
+        // 3. Текст под картинкой
+        ctx.fillStyle = '#0f0'; // Зеленый текст
+        ctx.font = 'bold 40px Courier New';
+        ctx.textAlign = 'center';
+        
+        // Добавляем черную обводку тексту, чтобы читался на любом фоне
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 4;
+        ctx.strokeText("MISSION ACCOMPLISHED", canvas.width/2, canvas.height - 80);
+        ctx.fillText("MISSION ACCOMPLISHED", canvas.width/2, canvas.height - 80);
+        
+        ctx.fillStyle = '#fff';
+        ctx.font = '20px Courier New';
+        ctx.strokeText("Click to Restart", canvas.width/2, canvas.height - 40);
+        ctx.fillText("Click to Restart", canvas.width/2, canvas.height - 40);
+    }
+
     function fail(r){gameState='GAMEOVER';document.getElementById('failReason').innerText=r;document.getElementById('gameOverScreen').style.display='flex';}
     function spawnParticles(x,y,c,n){for(let i=0;i<n;i++)particles.push({x,y,c,vx:(Math.random()-.5)*5,vy:(Math.random()-.5)*5,life:1});}
     function setHUD(r){
@@ -619,13 +689,59 @@
         if(r===1) h.innerHTML='<div class="bar-wrap"><div class="bar-label">BOAT</div><div class="health-track"><div id="hp_boat" class="health-fill"></div></div></div>';
         else h.innerHTML=['ALPHA','BRAVO','CHARLIE','DELTA'].map((n,i)=>`<div class="bar-wrap"><div class="bar-label">${n}</div><div class="health-track"><div id="hp_${i}" class="health-fill"></div></div></div>`).join('');
     }
-    function updateHUD(){
-        if(round===1) document.getElementById('hp_boat').style.width=Math.max(0,playerBoat.hp)+'%';
-        else squad.forEach((s,i)=>{let el=document.getElementById('hp_'+i); if(el){el.style.width=Math.max(0,s.hp)+'%';el.style.background=s.active?'#0f0':'#500';}});
+
+
+     function updateHUD(){
+        if(round===1 && playerBoat) document.getElementById('hp_boat').style.width=Math.max(0,playerBoat.hp)+'%';
+        else {
+            for(let i=0; i<4; i++){
+                let el = document.getElementById('hp_'+i);
+                if(el){
+                    // If squad index exists and active
+                    if(squad[i] && squad[i].active) {
+                        el.style.width = Math.max(0, squad[i].hp) + '%';
+                        el.style.background = '#0f0';
+                    } else {
+                        // Dead/Missing -> Empty bar
+                        el.style.width = '0%';
+                        el.style.background = '#f00'; 
+                    }
+                }
+            }
+        }
     }
 
+
+    // CHEAT CODE: SHIFT + 1
+    window.addEventListener('keydown', (e) => {
+        keys[e.code] = true;
+        if (e.shiftKey && (e.key === '1' || e.code === 'Digit1')) {
+            console.log("Cheat Triggered");
+            if (gameState === 'PLAYING') {
+                if (round < 3) winRound();
+                else winGame();
+            }
+        }
+    });
+
+
+
+
+
     window.onkeydown=e=>keys[e.code]=true; window.onkeyup=e=>keys[e.code]=false;
-    window.onmousedown=()=>mouse.down=true; window.onmouseup=()=>mouse.down=false;
+
+
+//    window.onmousedown=()=>mouse.down=true; 
+    window.onmousedown=()=>{
+        // Если победа - перезагружаем страницу
+        if(gameState === 'VICTORY_STATIC') location.reload(); 
+        
+        mouse.down=true;
+    };
+
+window.onmouseup=()=>mouse.down=false;
+
+
     window.onmousemove=e=>{mouse.x=e.clientX;mouse.y=e.clientY;};
     document.getElementById('playBtn').onclick=()=>{document.getElementById('startScreen').style.display='none';initR1();gameState='PLAYING';loop();};
     document.getElementById('nextBtn').onclick=()=>{document.getElementById('transitionScreen').style.display='none';if(round===1)initR2();else initR3();gameState='PLAYING';loop();};
